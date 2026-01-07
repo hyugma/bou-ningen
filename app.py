@@ -1,27 +1,17 @@
 import gradio as gr
-from ultralytics import YOLO
 import cv2
 import numpy as np
+import mediapipe as mp
 from stickman import draw_stickman
 
-import torch
+# Initialize MediaPipe Holistic
+mp_holistic = mp.solutions.holistic
+holistic = mp_holistic.Holistic(
+    min_detection_confidence=0.5, 
+    min_tracking_confidence=0.5
+)
 
-# Check for MPS (Apple Silicon) acceleration
-device = 'cpu'
-if torch.backends.mps.is_available():
-    device = 'mps'
-elif torch.cuda.is_available():
-    device = 'cuda'
-
-print(f"Using device: {device}")
-
-# Load YOLOv8 Pose model
-# It will download 'yolov8n-pose.pt' on first run
-model = YOLO('yolov8n-pose.pt')
-# Move to device explicitly
-model.to(device)
-
-def process_frame(frame):
+def process_frame(frame, thickness):
     """
     Processes a video frame:
     1. Detects pose using YOLOv8.
@@ -39,33 +29,49 @@ def process_frame(frame):
         new_h = int(frame.shape[0] * scale)
         frame = cv2.resize(frame, (640, new_h))
     
-    # imgsz=256 significantly speeds up inference (stickman doesn't need high precision)
-    # conf=0.5 filters low confidence preds early
-    results = model(frame, device=device, verbose=False, imgsz=256, conf=0.4)
+    # Gradio Image(source='webcam', streaming=True) passes numpy array (RGB).
+    # MediaPipe needs RGB.
     
-    # Get keypoints
-    if results[0].keypoints is not None and results[0].keypoints.data.shape[0] > 0:
-        persons_keypoints = results[0].keypoints.data.cpu().numpy()
+    # Ensure frame is writable for MediaPipe
+    frame.flags.writeable = False
+    
+    # Process
+    try:
+        results = holistic.process(frame)
         
-        # Draw the first person detected
-        keypoints = persons_keypoints[0]
-        stickman_img = draw_stickman(keypoints, img_shape=frame.shape)
+        # Draw
+        # draw_stickman creates a new canvas using img_shape
+        # Assuming draw_stickman is updated to handle MediaPipe results
+        stickman_img = draw_stickman(results, img_shape=frame.shape, thickness=int(thickness))
+        
         return stickman_img
-    
-    # If no person detected, return blank white image
-    h, w, _ = frame.shape
-    return np.ones((h, w, 3), dtype=np.uint8) * 255
+    except Exception as e:
+        print(f"Error processing frame: {e}")
+        # If an error occurs, return a blank white image or the original frame
+        h, w, _ = frame.shape
+        return np.ones((h, w, 3), dtype=np.uint8) * 255
 
 # Gradio Interface
-with gr.Blocks(title="YOLO Stickman") as demo:
-    gr.Markdown("# YOLO Stickman Motion Capture")
+with gr.Blocks(title="YOLO Stickman Motion App") as demo:
+    gr.Markdown("# YOLO Stickman Motion App")
+    
     with gr.Row():
-        with gr.Column():
-            input_video = gr.Image(sources=["webcam"], streaming=True, label="Webcam Input", type="numpy")
-        with gr.Column():
-            output_image = gr.Image(label="Stickman Output", type="numpy")
+        input_video = gr.Image(source="webcam", streaming=True, mirror_webcam=True, label="Webcam Input", type="numpy")
+        output_video = gr.Image(label="Stickman Output", type="numpy")
+        
+    thickness_slider = gr.Slider(minimum=1, maximum=20, value=4, step=1, label="Stick Thickness")
 
-    input_video.stream(process_frame, inputs=input_video, outputs=output_image)
-
+    # Streaming event
+    input_video.stream(
+        process_frame, 
+        inputs=[input_video, thickness_slider], 
+        outputs=output_video,
+        show_progress=False
+    )
+    
+    # Update on slider change too (optional, but meaningful only if frame creates update)
+    # thickness_slider.change(...) # Hard to drive video from slider unless we store last frame.
+    
+demo.queue()
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860)
