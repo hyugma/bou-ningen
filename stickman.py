@@ -23,7 +23,7 @@ RIGHT_KNEE = 26
 LEFT_ANKLE = 27
 RIGHT_ANKLE = 28
 
-def draw_stickman(results, img_shape=(480, 640), thickness=4):
+def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False):
     """
     Draws a stickman based on MediaPipe Holistic results.
     
@@ -31,6 +31,7 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4):
         results: MediaPipe Holistic results object.
         img_shape (tuple): (height, width) of the output image.
         thickness (int): Base thickness for lines.
+        sketch_mode (bool): If True, applies handwriting style (jitter/multiple strokes).
         
     Returns:
         numpy.ndarray: The stickman image.
@@ -73,47 +74,68 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4):
         spline_points.append(points[-1])
         return spline_points
 
-    def draw_sketch_line(p1, p2, thickness, complexity=2):
+    def draw_sketch_line(p1, p2, thickness, complexity=2, sketch_mode=False):
         if p1 is None or p2 is None: return
         pt1 = np.array([p1[0], p1[1]])
         pt2 = np.array([p2[0], p2[1]])
         dist = np.linalg.norm(pt1 - pt2)
         if dist < 1: return
 
-        for _ in range(complexity):
-            num_segments = max(2, int(dist / 15))
-            t_values = np.linspace(0, 1, num_segments + 1)
-            points = []
-            for t in t_values:
-                base_pt = pt1 * (1 - t) + pt2 * t
-                jitter_x = np.random.randint(-2, 3)
-                jitter_y = np.random.randint(-2, 3)
-                points.append((int(base_pt[0] + jitter_x), int(base_pt[1] + jitter_y)))
-            for i in range(len(points) - 1):
-                cv2.line(canvas, points[i], points[i+1], COLOR, thickness, cv2.LINE_AA)
+        loop_count = complexity if sketch_mode else 1
+        
+        for _ in range(loop_count):
+            if sketch_mode:
+                num_segments = max(2, int(dist / 15))
+                t_values = np.linspace(0, 1, num_segments + 1)
+                points = []
+                for t in t_values:
+                    base_pt = pt1 * (1 - t) + pt2 * t
+                    jitter_x = np.random.randint(-2, 3)
+                    jitter_y = np.random.randint(-2, 3)
+                    points.append((int(base_pt[0] + jitter_x), int(base_pt[1] + jitter_y)))
+                for i in range(len(points) - 1):
+                    cv2.line(canvas, points[i], points[i+1], COLOR, thickness, cv2.LINE_AA)
+            else:
+                # Clean line
+                cv2.line(canvas, tuple(pt1.astype(int)), tuple(pt2.astype(int)), COLOR, thickness, cv2.LINE_AA)
 
-    def draw_curve_from_points(points_list, thickness, complexity=2):
+    def draw_curve_from_points(points_list, thickness, complexity=2, sketch_mode=False):
         valid_pts = [p for p in points_list if p is not None]
         if len(valid_pts) < 2: return
         smooth_points = generate_catmull_rom_spline(valid_pts, num_points_per_segment=15)
-        for _ in range(complexity):
+        
+        loop_count = complexity if sketch_mode else 1
+
+        for _ in range(loop_count):
              for i in range(len(smooth_points) - 1):
                 pt1 = smooth_points[i]
                 pt2 = smooth_points[i+1]
-                p_start = (int(pt1[0]) + np.random.randint(-2,3), int(pt1[1]) + np.random.randint(-2,3))
-                p_end = (int(pt2[0]) + np.random.randint(-2,3), int(pt2[1]) + np.random.randint(-2,3))
+                
+                if sketch_mode:
+                    p_start = (int(pt1[0]) + np.random.randint(-2,3), int(pt1[1]) + np.random.randint(-2,3))
+                    p_end = (int(pt2[0]) + np.random.randint(-2,3), int(pt2[1]) + np.random.randint(-2,3))
+                else:
+                    p_start = (int(pt1[0]), int(pt1[1]))
+                    p_end = (int(pt2[0]), int(pt2[1]))
+                    
                 cv2.line(canvas, p_start, p_end, COLOR, thickness, cv2.LINE_AA)
     
-    def draw_sketch_circle(center, radius, thickness, complexity=2):
+    def draw_sketch_circle(center, radius, thickness, complexity=2, sketch_mode=False):
         if center is None: return
         cx, cy = int(center[0]), int(center[1])
         radius = int(radius)
-        for _ in range(complexity):
+        
+        loop_count = complexity if sketch_mode else 1
+        
+        for _ in range(loop_count):
             num_pts = max(8, int(radius / 2))
             angles = np.linspace(0, 2*np.pi, num_pts, endpoint=True)
             points = []
             for ang in angles:
-                r_jit = radius + np.random.randint(-2, 3)
+                if sketch_mode:
+                    r_jit = radius + np.random.randint(-2, 3)
+                else:
+                    r_jit = radius
                 x = int(cx + r_jit * np.cos(ang))
                 y = int(cy + r_jit * np.sin(ang))
                 points.append((x, y))
@@ -122,7 +144,7 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4):
                 pt_b = points[(i+1) % len(points)]
                 cv2.line(canvas, pt_a, pt_b, COLOR, thickness, cv2.LINE_AA)
 
-    def draw_henohenomoheji(center, l_eye_pt, r_eye_pt, radius, thickness, complexity=2):
+    def draw_henohenomoheji(center, l_eye_pt, r_eye_pt, radius, thickness, complexity=2, sketch_mode=False):
         if center is None: return
         cx, cy = int(center[0]), int(center[1])
         r = float(radius)
@@ -133,7 +155,7 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4):
             abs_pts = []
             for (rx, ry) in pts_rel:
                 abs_pts.append((bx + rx * r, by + ry * r))
-            draw_curve_from_points(abs_pts, thickness, complexity=1)
+            draw_curve_from_points(abs_pts, thickness, complexity=1, sketch_mode=sketch_mode)
 
         # 3. NO (Right Eye)
         if r_eye_pt is not None:
@@ -216,7 +238,7 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4):
                 radius = int(dist_shoulder / 2.2)
                 if radius < 15: radius = 15
         
-        draw_henohenomoheji(nose, l_eye, r_eye, radius, thickness)
+        draw_henohenomoheji(nose, l_eye, r_eye, radius, thickness, sketch_mode=sketch_mode)
         
         if neck is not None:
             v = neck - nose
@@ -234,17 +256,17 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4):
         chain_l = [body_start]
         if head_bottom is not None: chain_l.append(neck)
         chain_l.extend([pelvis, l_knee, l_ankle])
-        draw_curve_from_points(chain_l, thickness)
+        draw_curve_from_points(chain_l, thickness, sketch_mode=sketch_mode)
         
         # Right Leg Chain
         chain_r = [body_start]
         if head_bottom is not None: chain_r.append(neck)
         chain_r.extend([pelvis, r_knee, r_ankle])
-        draw_curve_from_points(chain_r, thickness)
+        draw_curve_from_points(chain_r, thickness, sketch_mode=sketch_mode)
         
         # Arms
-        draw_curve_from_points([neck, l_elbow, l_wrist], thickness)
-        draw_curve_from_points([neck, r_elbow, r_wrist], thickness)
+        draw_curve_from_points([neck, l_elbow, l_wrist], thickness, sketch_mode=sketch_mode)
+        draw_curve_from_points([neck, r_elbow, r_wrist], thickness, sketch_mode=sketch_mode)
 
     # 3. Feet (Simple)
     def draw_foot(ankle, knee, side='left'):
@@ -264,7 +286,7 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4):
             if foot_vec[0] < 0: foot_vec = -foot_vec
         else:
             if foot_vec[0] > 0: foot_vec = -foot_vec
-        draw_sketch_line(ankle, ankle + foot_vec, thickness, complexity=1)
+        draw_sketch_line(ankle, ankle + foot_vec, thickness, complexity=1, sketch_mode=sketch_mode)
 
     draw_foot(l_ankle, l_knee, 'left')
     draw_foot(r_ankle, r_knee, 'right')
@@ -295,7 +317,7 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4):
             for idx in finger_indices:
                 lm = hand_landmarks.landmark[idx]
                 pts.append(np.array([lm.x * w, lm.y * h]))
-            draw_curve_from_points(pts, max(1, thickness//2), complexity=1)
+            draw_curve_from_points(pts, max(1, thickness//2), complexity=1, sketch_mode=sketch_mode)
 
     # Check for hands in results
     # MediaPipe Holistic returns left_hand_landmarks and right_hand_landmarks

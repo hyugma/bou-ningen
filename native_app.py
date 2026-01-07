@@ -6,24 +6,18 @@ import time
 from stickman import draw_stickman
 
 # Debug MediaPipe
-print("MediaPipe file:", mp.__file__)
-print("MediaPipe dir:", dir(mp))
+# print("MediaPipe file:", mp.__file__)
+# print("MediaPipe dir:", dir(mp))
 
 # Initialize MediaPipe Holistic
-try:
-    mp_holistic = mp.solutions.holistic
-    mp_drawing = mp.solutions.drawing_utils
-except AttributeError as e:
-    print(f"Error accessing mp.solutions: {e}")
-    # Try importing directly
-    import mediapipe.python.solutions.holistic
-    print("Direct import successful?")
-    raise e
+mp_holistic = mp.solutions.holistic
+mp_drawing = mp.solutions.drawing_utils
 
 def main():
     parser = argparse.ArgumentParser(description='Native Stickman Capture')
     parser.add_argument('--camera', type=int, default=0, help='Camera index (default: 0).')
     parser.add_argument('--thickness', type=int, default=4, help='Stickman line thickness (default: 4).')
+    parser.add_argument('--sketch', action='store_true', help='Enable handwriting sketch style.')
     args = parser.parse_args()
 
     cap = cv2.VideoCapture(args.camera)
@@ -56,7 +50,7 @@ def main():
             
             # Draw Stickman
             # draw_stickman now expects 'results' and 'img_shape'
-            stickman_img = draw_stickman(results, img_shape=frame.shape, thickness=args.thickness)
+            stickman_img = draw_stickman(results, img_shape=frame.shape, thickness=args.thickness, sketch_mode=args.sketch)
 
             # Display
             cv2.imshow('Stickman Native', stickman_img)

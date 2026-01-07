@@ -11,12 +11,11 @@ holistic = mp_holistic.Holistic(
     min_tracking_confidence=0.5
 )
 
-def process_frame(frame, thickness):
+def process_frame(frame, thickness, sketch_mode):
     """
     Processes a video frame:
-    1. Detects pose using YOLOv8.
-    2. detailed keypoints.
-    3. Draws stickman.
+    1. Detects pose using MediaPipe Holistic.
+    2. Draws stickman.
     """
     if frame is None:
         return None
@@ -29,9 +28,6 @@ def process_frame(frame, thickness):
         new_h = int(frame.shape[0] * scale)
         frame = cv2.resize(frame, (640, new_h))
     
-    # Gradio Image(source='webcam', streaming=True) passes numpy array (RGB).
-    # MediaPipe needs RGB.
-    
     # Ensure frame is writable for MediaPipe
     frame.flags.writeable = False
     
@@ -40,9 +36,8 @@ def process_frame(frame, thickness):
         results = holistic.process(frame)
         
         # Draw
-        # draw_stickman creates a new canvas using img_shape
-        # Assuming draw_stickman is updated to handle MediaPipe results
-        stickman_img = draw_stickman(results, img_shape=frame.shape, thickness=int(thickness))
+        # draw_stickman now accepts sketch_mode
+        stickman_img = draw_stickman(results, img_shape=frame.shape, thickness=int(thickness), sketch_mode=sketch_mode)
         
         return stickman_img
     except Exception as e:
@@ -56,15 +51,17 @@ with gr.Blocks(title="YOLO Stickman Motion App") as demo:
     gr.Markdown("# YOLO Stickman Motion App")
     
     with gr.Row():
-        input_video = gr.Image(source="webcam", streaming=True, mirror_webcam=True, label="Webcam Input", type="numpy")
+        input_video = gr.Image(sources=["webcam"], label="Webcam Input", type="numpy")
         output_video = gr.Image(label="Stickman Output", type="numpy")
         
-    thickness_slider = gr.Slider(minimum=1, maximum=20, value=4, step=1, label="Stick Thickness")
+    with gr.Row():
+        thickness_slider = gr.Slider(minimum=1, maximum=20, value=4, step=1, label="Stick Thickness")
+        sketch_checkbox = gr.Checkbox(label="Handwriting Style", value=False)
 
     # Streaming event
     input_video.stream(
         process_frame, 
-        inputs=[input_video, thickness_slider], 
+        inputs=[input_video, thickness_slider, sketch_checkbox], 
         outputs=output_video,
         show_progress=False
     )
