@@ -23,6 +23,16 @@ RIGHT_KNEE = 26
 LEFT_ANKLE = 27
 RIGHT_ANKLE = 28
 
+class MockHand:
+    """Helper to wrap a list of landmarks into an object with .landmark property."""
+    def __init__(self, lms):
+        self.landmark = lms
+
+class MockLandmarks:
+    """Helper to wrap a list of landmarks into an object with .landmark property."""
+    def __init__(self, lms):
+        self.landmark = lms
+
 class StickmanCamera:
     """
     Handles auto-zoom and tracking smoothing.
@@ -244,7 +254,7 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
                 pt_b = points[(i+1) % len(points)]
                 cv2.line(canvas, pt_a, pt_b, COLOR, thickness, cv2.LINE_AA)
 
-    def draw_henohenomoheji(center, l_eye_pt, r_eye_pt, radius, thickness, complexity=2, sketch_mode=False):
+    def draw_henohenomoheji(center, l_eye_pt, r_eye_pt, radius, thickness, complexity=2, sketch_mode=False, facing_right=True):
         if center is None: return
         cx, cy = int(center[0]), int(center[1])
         r = float(radius)
@@ -288,23 +298,62 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
         
         # 7. JI (Outline) - じ
         # "ji" is "shi" with dots.
-        # Draw 'Shi' (し) shape: Start top-left, curve down-left, hook up-right.
-        # Points relative to center, radius R
-        # Refined points for a face-enclosing 'Shi'
+        # Standard "Shi" (し) curves from top-left, down, to right.
+        # shape: Start top-left, curve down-left, hook up-right.
+        
+        # Default shape (Facing RIGHT, i.e. Screen Right)
+        # In this context, "Facing Right" means the face opens to the right.
+        # The vertical stroke of 'Shi' is on the left (Back of head).
+        # The hook is on the right (Chin/Face).
+        
+        # If Facing LEFT (Screen Left):
+        # We should flip it horizontally.
+        # Vertical stroke on Right (Back of head).
+        # Hook on Left (Chin/Face).
+        
+        x_mult = 1.0 if facing_right else -1.0
+        
         shi_pts = [
-            (-0.3, -0.75),  # Start top-left-ish
-            (-0.95, -0.2),  # Bulge left
-            (-0.2, 0.95),   # Bottom chin area
-            (0.85, 0.2)     # Hook up to right
+            (-0.3 * x_mult, -0.75),  # Start top-back
+            (-0.95 * x_mult, -0.2),  # Bulge back
+            (-0.2 * x_mult, 0.95),   # Bottom chin area
+            (0.85 * x_mult, 0.2)     # Hook up to face front
         ]
         draw_stroke(nose_base, shi_pts)
         
-        # Dakuten (Dots) - near top right of the "Shi" end
-        # "Shi" ends around (0.85, 0.2). Dots should be above/outside.
-        # Dot 1
-        draw_stroke(nose_base, [(0.9, -0.3), (1.0, -0.2)])
+        # Dakuten (Dots)
+        # User requested: "dot to be the opposite side of the facing direction"
+        # If facing Right -> Dots on Left (Back).
+        # If facing Left -> Dots on Right (Back).
+        # Our X flip logic above puts the "back" (vertical stroke) on the left if facing Right.
+        # So we want dots on the Left if facing Right.
+        # Wait, standard `じ` dots are on the Top-Right (Open side).
+        # But user wants "Opposite of facing".
+        # If Facing Right -> Dots on Left (Back).
+        # If Facing Left -> Dots on Right (Back).
+        
+        # Let's define dots relative to "Back" of head.
+        # Back is where x is negative (if facing Right).
+        # So dots should be around x = -0.something.
+        
+        # Dot 1 (-0.9, -0.3) if facing Right?
+        # Let's try to place them "Behind" the vertical stroke.
+        # Vertical stroke is around x=-0.3 to -0.95.
+        
+        # User requested: "dots need to come to the open part of the circle (head edge)"
+        # This means the Face side (Right if facing Right).
+        # Previously I put them on the Back side (-x).
+        # Now we want them on the Front side (+x).
+        
+        dot_x_base = 1.0 * x_mult
+        
+        # Dot 1: Along the edge, probably upper area or near the "ear" position?
+        # Standard Ji: Top-Right.
+        # Let's place them at x=1.0, y=-0.3 range.
+        
+        draw_stroke(nose_base, [(dot_x_base, -0.3), (dot_x_base + 0.1 * x_mult, -0.2)])
         # Dot 2
-        draw_stroke(nose_base, [(1.05, -0.4), (1.15, -0.3)])
+        draw_stroke(nose_base, [(dot_x_base + 0.05 * x_mult, -0.45), (dot_x_base + 0.15 * x_mult, -0.35)])
 
     # --- Core Logic ---
     
@@ -341,7 +390,17 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
                 radius = int(dist_shoulder / 2.2)
                 if radius < 15: radius = 15
         
-        draw_henohenomoheji(nose, l_eye, r_eye, radius, thickness, sketch_mode=sketch_mode)
+        facing_right = True
+        if neck is not None:
+             # Check X direction relative to neck (center of shoulders)
+             # If nose.x > neck.x -> Facing Right (Screen Right)
+             if nose[0] < neck[0]: # Wait. pixels increase right.
+                  # nose[0] < neck[0] => Nose is Left of Neck => Facing Left.
+                  facing_right = False
+             else:
+                  facing_right = True
+                  
+        draw_henohenomoheji(nose, l_eye, r_eye, radius, thickness, sketch_mode=sketch_mode, facing_right=facing_right)
         
         if neck is not None:
             v = neck - nose
@@ -461,8 +520,6 @@ def draw_stickman(data, img_shape=(480, 640), thickness=4, sketch_mode=False, ca
             all_lms = []
             for person_lms in multi_pose_landmarks:
                 all_lms.extend(person_lms)
-            class MockLandmarks:
-                def __init__(self, lms): self.landmark = lms
             camera.update(MockLandmarks(all_lms), w, h)
 
         # Helper to find matching hand
@@ -487,9 +544,7 @@ def draw_stickman(data, img_shape=(480, 640), thickness=4, sketch_mode=False, ca
             l_hand_match = None
             r_hand_match = None
             
-            if multi_hand_landmarks:
-                class MockHand: 
-                     def __init__(self, lms): self.landmark = lms 
+            if multi_hand_landmarks: 
 
                 # Get normalized wrists
                 l_wrist_lm = landmarks[l_wrist_idx]
