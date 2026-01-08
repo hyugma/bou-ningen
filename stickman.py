@@ -23,6 +23,16 @@ RIGHT_KNEE = 26
 LEFT_ANKLE = 27
 RIGHT_ANKLE = 28
 
+class MockHand:
+    """Helper to wrap a list of landmarks into an object with .landmark property."""
+    def __init__(self, lms):
+        self.landmark = lms
+
+class MockLandmarks:
+    """Helper to wrap a list of landmarks into an object with .landmark property."""
+    def __init__(self, lms):
+        self.landmark = lms
+
 class StickmanCamera:
     """
     Handles auto-zoom and tracking smoothing.
@@ -123,34 +133,23 @@ class StickmanCamera:
         
         return np.array([final_x, final_y])
 
-def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False, camera=None):
+def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, camera, left_hand=None, right_hand=None):
     """
-    Draws a stickman based on MediaPipe Holistic results.
-    
-    Args:
-        results: MediaPipe Holistic results object.
-        img_shape (tuple): (height, width) of the output image.
-        thickness (int): Base thickness for lines.
-        sketch_mode (bool): If True, applies handwriting style.
-        camera (StickmanCamera, optional): If provided, applies auto-zoom/tracking.
-        
-    Returns:
-        numpy.ndarray: The stickman image.
+    Draws a single stickman from a list of Pose Landmarker landmarks.
+    Optional: left_hand, right_hand (MediaPipe landmarks) for detailed fingers.
     """
     h, w = img_shape[:2]
-    canvas = np.ones((h, w, 3), dtype=np.uint8) * 255
+    # Canvas is passed in
     
-    if not results.pose_landmarks:
-        return canvas
+    if not landmarks:
+        return
 
-    # Update Camera if provided
-    if camera:
-        camera.update(results.pose_landmarks, w, h)
+
 
     # Helper to get point from landmarks
-    def get_point(idx, landmarks=results.pose_landmarks):
-        if idx >= len(landmarks.landmark): return None
-        lm = landmarks.landmark[idx]
+    def get_point(idx, landmarks=landmarks):
+        if idx >= len(landmarks): return None
+        lm = landmarks[idx]
         if lm.visibility < 0.5: return None
         
         pt_norm = np.array([lm.x, lm.y])
@@ -255,7 +254,7 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False,
                 pt_b = points[(i+1) % len(points)]
                 cv2.line(canvas, pt_a, pt_b, COLOR, thickness, cv2.LINE_AA)
 
-    def draw_henohenomoheji(center, l_eye_pt, r_eye_pt, radius, thickness, complexity=2, sketch_mode=False):
+    def draw_henohenomoheji(center, l_eye_pt, r_eye_pt, radius, thickness, complexity=2, sketch_mode=False, facing_right=True):
         if center is None: return
         cx, cy = int(center[0]), int(center[1])
         r = float(radius)
@@ -299,23 +298,62 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False,
         
         # 7. JI (Outline) - じ
         # "ji" is "shi" with dots.
-        # Draw 'Shi' (し) shape: Start top-left, curve down-left, hook up-right.
-        # Points relative to center, radius R
-        # Refined points for a face-enclosing 'Shi'
+        # Standard "Shi" (し) curves from top-left, down, to right.
+        # shape: Start top-left, curve down-left, hook up-right.
+        
+        # Default shape (Facing RIGHT, i.e. Screen Right)
+        # In this context, "Facing Right" means the face opens to the right.
+        # The vertical stroke of 'Shi' is on the left (Back of head).
+        # The hook is on the right (Chin/Face).
+        
+        # If Facing LEFT (Screen Left):
+        # We should flip it horizontally.
+        # Vertical stroke on Right (Back of head).
+        # Hook on Left (Chin/Face).
+        
+        x_mult = 1.0 if facing_right else -1.0
+        
         shi_pts = [
-            (-0.3, -0.75),  # Start top-left-ish
-            (-0.95, -0.2),  # Bulge left
-            (-0.2, 0.95),   # Bottom chin area
-            (0.85, 0.2)     # Hook up to right
+            (-0.3 * x_mult, -0.75),  # Start top-back
+            (-0.95 * x_mult, -0.2),  # Bulge back
+            (-0.2 * x_mult, 0.95),   # Bottom chin area
+            (0.85 * x_mult, 0.2)     # Hook up to face front
         ]
         draw_stroke(nose_base, shi_pts)
         
-        # Dakuten (Dots) - near top right of the "Shi" end
-        # "Shi" ends around (0.85, 0.2). Dots should be above/outside.
-        # Dot 1
-        draw_stroke(nose_base, [(0.9, -0.3), (1.0, -0.2)])
+        # Dakuten (Dots)
+        # User requested: "dot to be the opposite side of the facing direction"
+        # If facing Right -> Dots on Left (Back).
+        # If facing Left -> Dots on Right (Back).
+        # Our X flip logic above puts the "back" (vertical stroke) on the left if facing Right.
+        # So we want dots on the Left if facing Right.
+        # Wait, standard `じ` dots are on the Top-Right (Open side).
+        # But user wants "Opposite of facing".
+        # If Facing Right -> Dots on Left (Back).
+        # If Facing Left -> Dots on Right (Back).
+        
+        # Let's define dots relative to "Back" of head.
+        # Back is where x is negative (if facing Right).
+        # So dots should be around x = -0.something.
+        
+        # Dot 1 (-0.9, -0.3) if facing Right?
+        # Let's try to place them "Behind" the vertical stroke.
+        # Vertical stroke is around x=-0.3 to -0.95.
+        
+        # User requested: "dots need to come to the open part of the circle (head edge)"
+        # This means the Face side (Right if facing Right).
+        # Previously I put them on the Back side (-x).
+        # Now we want them on the Front side (+x).
+        
+        dot_x_base = 1.0 * x_mult
+        
+        # Dot 1: Along the edge, probably upper area or near the "ear" position?
+        # Standard Ji: Top-Right.
+        # Let's place them at x=1.0, y=-0.3 range.
+        
+        draw_stroke(nose_base, [(dot_x_base, -0.3), (dot_x_base + 0.1 * x_mult, -0.2)])
         # Dot 2
-        draw_stroke(nose_base, [(1.05, -0.4), (1.15, -0.3)])
+        draw_stroke(nose_base, [(dot_x_base + 0.05 * x_mult, -0.45), (dot_x_base + 0.15 * x_mult, -0.35)])
 
     # --- Core Logic ---
     
@@ -352,7 +390,17 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False,
                 radius = int(dist_shoulder / 2.2)
                 if radius < 15: radius = 15
         
-        draw_henohenomoheji(nose, l_eye, r_eye, radius, thickness, sketch_mode=sketch_mode)
+        facing_right = True
+        if neck is not None:
+             # Check X direction relative to neck (center of shoulders)
+             # If nose.x > neck.x -> Facing Right (Screen Right)
+             if nose[0] < neck[0]: # Wait. pixels increase right.
+                  # nose[0] < neck[0] => Nose is Left of Neck => Facing Left.
+                  facing_right = False
+             else:
+                  facing_right = True
+                  
+        draw_henohenomoheji(nose, l_eye, r_eye, radius, thickness, sketch_mode=sketch_mode, facing_right=facing_right)
         
         if neck is not None:
             v = neck - nose
@@ -412,41 +460,136 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False,
     draw_foot(r_ankle, r_knee, 'right')
 
     # 4. Hands (Fingers) - Real or Simulated
-    # If we have hand landmarks, use them. Else simulate.
     def draw_real_hand(hand_landmarks):
         # Wrist is 0
         if not hand_landmarks: return
-        
         # Helper to get hand point relative to camera
         def get_hand_pt(idx):
              lm = hand_landmarks.landmark[idx]
              pt_norm = np.array([lm.x, lm.y])
-             if camera:
-                 return camera.transform(pt_norm, w, h)
-             else:
-                 return np.array([lm.x * w, lm.y * h])
+             if camera: return camera.transform(pt_norm, w, h)
+             else: return np.array([lm.x * w, lm.y * h])
 
         wrist = get_hand_pt(0)
-        
+        # Segments: Thumb(1-4), Index(5-8), Middle(9-12), Ring(13-16), Pinky(17-20)
         for finger_indices in [[1,2,3,4], [5,6,7,8], [9,10,11,12], [13,14,15,16], [17,18,19,20]]:
             pts = [wrist]
-            for idx in finger_indices:
-                pts.append(get_hand_pt(idx))
+            for idx in finger_indices: pts.append(get_hand_pt(idx))
             draw_curve_from_points(pts, max(1, thickness//2), complexity=1, sketch_mode=sketch_mode)
 
-    # Check for hands in results
-    # MediaPipe Holistic returns left_hand_landmarks and right_hand_landmarks
-    if results.left_hand_landmarks:
-        draw_real_hand(results.left_hand_landmarks)
+    if left_hand:
+        draw_real_hand(left_hand)
     elif l_wrist is not None and l_elbow is not None:
-        # Fallback simulation
-        # Same logic as before if needed, or just skip if we assume MP always tracks hands?
-        # MP Holistic hand tracking is triggered if hands are detected.
-        # If not detected, we might want fallback?
-        # Let's keep fallback for robustness.
-        pass # To keep code clean, omitting fallback copy-paste here unless requested.
+         # Fallback Simple Hand
+         hand_rad = int(max(5, thickness * 1.5))
+         cx, cy = int(l_wrist[0]), int(l_wrist[1])
+         for _ in range(2 if sketch_mode else 1):
+             cv2.circle(canvas, (cx, cy), hand_rad, COLOR, thickness//2)
+             
+    if right_hand:
+         draw_real_hand(right_hand)
+    elif r_wrist is not None and r_elbow is not None:
+         # Fallback Simple Hand
+         hand_rad = int(max(5, thickness * 1.5))
+         cx, cy = int(r_wrist[0]), int(r_wrist[1])
+         for _ in range(2 if sketch_mode else 1):
+             cv2.circle(canvas, (cx, cy), hand_rad, COLOR, thickness//2)
 
-    if results.right_hand_landmarks:
-        draw_real_hand(results.right_hand_landmarks)
+    return canvas
 
+def draw_stickman(data, img_shape=(480, 640), thickness=4, sketch_mode=False, camera=None, mode='multi', multi_hand_landmarks=None):
+    """
+    Draws stickman/men.
+    Args:
+        data: If mode='multi', list of landmark lists (Pose).
+              If mode='single', MediaPipe Holistic results object.
+        multi_hand_landmarks: List of landmark lists (Hand) for mode='multi'.
+    """
+    h, w = img_shape[:2]
+    canvas = np.ones((h, w, 3), dtype=np.uint8) * 255
+    
+    if not data:
+        return canvas
+
+    if mode == 'multi':
+        # data is multi_pose_landmarks
+        multi_pose_landmarks = data
+        if not multi_pose_landmarks: return canvas
+        
+        if camera:
+            all_lms = []
+            for person_lms in multi_pose_landmarks:
+                all_lms.extend(person_lms)
+            camera.update(MockLandmarks(all_lms), w, h)
+
+        # Helper to find matching hand
+        def find_hand(wrist_pt):
+            if not multi_hand_landmarks or wrist_pt is None: return None
+            # wrist_pt is screen coordinates if camera, else pixels.
+            # But hand landmarks are normalized. 
+            # We need to compare them in same space.
+            # Let's use normalized coordinates for matching to be robust?
+            # actually draw_single_person calculates wrist_pt using camera transform.
+            # We should probably get normalized wrist from pose landmark directly.
+            return None
+        
+        # New matching logic:
+        # We need normalized wrist for matching.
+        
+        for landmarks in multi_pose_landmarks:
+            # Find closest hands
+            l_wrist_idx = 15
+            r_wrist_idx = 16
+            
+            l_hand_match = None
+            r_hand_match = None
+            
+            if multi_hand_landmarks: 
+
+                # Get normalized wrists
+                l_wrist_lm = landmarks[l_wrist_idx]
+                r_wrist_lm = landmarks[r_wrist_idx]
+                
+                # Simple Threshold matching (in normalized space)
+                thresh = 0.2 # Increased threshold slightly
+                
+                min_dist_l = thresh
+                for hand_lms in multi_hand_landmarks:
+                    # Hand wrist is 0
+                    h_wrist = hand_lms[0]
+                    dist = np.sqrt((l_wrist_lm.x - h_wrist.x)**2 + (l_wrist_lm.y - h_wrist.y)**2)
+                    if dist < min_dist_l:
+                        min_dist_l = dist
+                        l_hand_match = MockHand(hand_lms)
+
+                min_dist_r = thresh
+                for hand_lms in multi_hand_landmarks:
+                    h_wrist = hand_lms[0]
+                    dist = np.sqrt((r_wrist_lm.x - h_wrist.x)**2 + (r_wrist_lm.y - h_wrist.y)**2)
+                    if dist < min_dist_r:
+                        min_dist_r = dist
+                        r_hand_match = MockHand(hand_lms)
+
+            draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, camera, 
+                               left_hand=l_hand_match, right_hand=r_hand_match)
+
+    elif mode == 'single':
+        # data is holistic results
+        results = data
+        if not results.pose_landmarks: return canvas
+        
+        if camera:
+            camera.update(results.pose_landmarks, w, h)
+            
+        draw_single_person(
+            canvas, 
+            results.pose_landmarks.landmark, 
+            img_shape, 
+            thickness, 
+            sketch_mode, 
+            camera,
+            left_hand=results.left_hand_landmarks,
+            right_hand=results.right_hand_landmarks
+        )
+        
     return canvas
