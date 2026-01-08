@@ -123,34 +123,23 @@ class StickmanCamera:
         
         return np.array([final_x, final_y])
 
-def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False, camera=None):
+def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, camera, left_hand=None, right_hand=None):
     """
-    Draws a stickman based on MediaPipe Holistic results.
-    
-    Args:
-        results: MediaPipe Holistic results object.
-        img_shape (tuple): (height, width) of the output image.
-        thickness (int): Base thickness for lines.
-        sketch_mode (bool): If True, applies handwriting style.
-        camera (StickmanCamera, optional): If provided, applies auto-zoom/tracking.
-        
-    Returns:
-        numpy.ndarray: The stickman image.
+    Draws a single stickman from a list of Pose Landmarker landmarks.
+    Optional: left_hand, right_hand (MediaPipe landmarks) for detailed fingers.
     """
     h, w = img_shape[:2]
-    canvas = np.ones((h, w, 3), dtype=np.uint8) * 255
+    # Canvas is passed in
     
-    if not results.pose_landmarks:
-        return canvas
+    if not landmarks:
+        return
 
-    # Update Camera if provided
-    if camera:
-        camera.update(results.pose_landmarks, w, h)
+
 
     # Helper to get point from landmarks
-    def get_point(idx, landmarks=results.pose_landmarks):
-        if idx >= len(landmarks.landmark): return None
-        lm = landmarks.landmark[idx]
+    def get_point(idx, landmarks=landmarks):
+        if idx >= len(landmarks): return None
+        lm = landmarks[idx]
         if lm.visibility < 0.5: return None
         
         pt_norm = np.array([lm.x, lm.y])
@@ -412,41 +401,140 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False,
     draw_foot(r_ankle, r_knee, 'right')
 
     # 4. Hands (Fingers) - Real or Simulated
-    # If we have hand landmarks, use them. Else simulate.
     def draw_real_hand(hand_landmarks):
         # Wrist is 0
         if not hand_landmarks: return
-        
         # Helper to get hand point relative to camera
         def get_hand_pt(idx):
              lm = hand_landmarks.landmark[idx]
              pt_norm = np.array([lm.x, lm.y])
-             if camera:
-                 return camera.transform(pt_norm, w, h)
-             else:
-                 return np.array([lm.x * w, lm.y * h])
+             if camera: return camera.transform(pt_norm, w, h)
+             else: return np.array([lm.x * w, lm.y * h])
 
         wrist = get_hand_pt(0)
-        
+        # Segments: Thumb(1-4), Index(5-8), Middle(9-12), Ring(13-16), Pinky(17-20)
         for finger_indices in [[1,2,3,4], [5,6,7,8], [9,10,11,12], [13,14,15,16], [17,18,19,20]]:
             pts = [wrist]
-            for idx in finger_indices:
-                pts.append(get_hand_pt(idx))
+            for idx in finger_indices: pts.append(get_hand_pt(idx))
             draw_curve_from_points(pts, max(1, thickness//2), complexity=1, sketch_mode=sketch_mode)
 
-    # Check for hands in results
-    # MediaPipe Holistic returns left_hand_landmarks and right_hand_landmarks
-    if results.left_hand_landmarks:
-        draw_real_hand(results.left_hand_landmarks)
+    if left_hand:
+        draw_real_hand(left_hand)
     elif l_wrist is not None and l_elbow is not None:
-        # Fallback simulation
-        # Same logic as before if needed, or just skip if we assume MP always tracks hands?
-        # MP Holistic hand tracking is triggered if hands are detected.
-        # If not detected, we might want fallback?
-        # Let's keep fallback for robustness.
-        pass # To keep code clean, omitting fallback copy-paste here unless requested.
+         # Fallback Simple Hand
+         hand_rad = int(max(5, thickness * 1.5))
+         cx, cy = int(l_wrist[0]), int(l_wrist[1])
+         for _ in range(2 if sketch_mode else 1):
+             cv2.circle(canvas, (cx, cy), hand_rad, COLOR, thickness//2)
+             
+    if right_hand:
+         draw_real_hand(right_hand)
+    elif r_wrist is not None and r_elbow is not None:
+         # Fallback Simple Hand
+         hand_rad = int(max(5, thickness * 1.5))
+         cx, cy = int(r_wrist[0]), int(r_wrist[1])
+         for _ in range(2 if sketch_mode else 1):
+             cv2.circle(canvas, (cx, cy), hand_rad, COLOR, thickness//2)
 
-    if results.right_hand_landmarks:
-        draw_real_hand(results.right_hand_landmarks)
+    return canvas
 
+def draw_stickman(data, img_shape=(480, 640), thickness=4, sketch_mode=False, camera=None, mode='multi', multi_hand_landmarks=None):
+    """
+    Draws stickman/men.
+    Args:
+        data: If mode='multi', list of landmark lists (Pose).
+              If mode='single', MediaPipe Holistic results object.
+        multi_hand_landmarks: List of landmark lists (Hand) for mode='multi'.
+    """
+    h, w = img_shape[:2]
+    canvas = np.ones((h, w, 3), dtype=np.uint8) * 255
+    
+    if not data:
+        return canvas
+
+    if mode == 'multi':
+        # data is multi_pose_landmarks
+        multi_pose_landmarks = data
+        if not multi_pose_landmarks: return canvas
+        
+        if camera:
+            all_lms = []
+            for person_lms in multi_pose_landmarks:
+                all_lms.extend(person_lms)
+            class MockLandmarks:
+                def __init__(self, lms): self.landmark = lms
+            camera.update(MockLandmarks(all_lms), w, h)
+
+        # Helper to find matching hand
+        def find_hand(wrist_pt):
+            if not multi_hand_landmarks or wrist_pt is None: return None
+            # wrist_pt is screen coordinates if camera, else pixels.
+            # But hand landmarks are normalized. 
+            # We need to compare them in same space.
+            # Let's use normalized coordinates for matching to be robust?
+            # actually draw_single_person calculates wrist_pt using camera transform.
+            # We should probably get normalized wrist from pose landmark directly.
+            return None
+        
+        # New matching logic:
+        # We need normalized wrist for matching.
+        
+        for landmarks in multi_pose_landmarks:
+            # Find closest hands
+            l_wrist_idx = 15
+            r_wrist_idx = 16
+            
+            l_hand_match = None
+            r_hand_match = None
+            
+            if multi_hand_landmarks:
+                class MockHand: 
+                     def __init__(self, lms): self.landmark = lms 
+
+                # Get normalized wrists
+                l_wrist_lm = landmarks[l_wrist_idx]
+                r_wrist_lm = landmarks[r_wrist_idx]
+                
+                # Simple Threshold matching (in normalized space)
+                thresh = 0.2 # Increased threshold slightly
+                
+                min_dist_l = thresh
+                for hand_lms in multi_hand_landmarks:
+                    # Hand wrist is 0
+                    h_wrist = hand_lms[0]
+                    dist = np.sqrt((l_wrist_lm.x - h_wrist.x)**2 + (l_wrist_lm.y - h_wrist.y)**2)
+                    if dist < min_dist_l:
+                        min_dist_l = dist
+                        l_hand_match = MockHand(hand_lms)
+
+                min_dist_r = thresh
+                for hand_lms in multi_hand_landmarks:
+                    h_wrist = hand_lms[0]
+                    dist = np.sqrt((r_wrist_lm.x - h_wrist.x)**2 + (r_wrist_lm.y - h_wrist.y)**2)
+                    if dist < min_dist_r:
+                        min_dist_r = dist
+                        r_hand_match = MockHand(hand_lms)
+
+            draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, camera, 
+                               left_hand=l_hand_match, right_hand=r_hand_match)
+
+    elif mode == 'single':
+        # data is holistic results
+        results = data
+        if not results.pose_landmarks: return canvas
+        
+        if camera:
+            camera.update(results.pose_landmarks, w, h)
+            
+        draw_single_person(
+            canvas, 
+            results.pose_landmarks.landmark, 
+            img_shape, 
+            thickness, 
+            sketch_mode, 
+            camera,
+            left_hand=results.left_hand_landmarks,
+            right_hand=results.right_hand_landmarks
+        )
+        
     return canvas
