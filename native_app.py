@@ -3,7 +3,7 @@ import argparse
 import mediapipe as mp
 import numpy as np
 import time
-from stickman import draw_stickman
+from stickman import draw_stickman, StickmanCamera
 
 # Debug MediaPipe
 # print("MediaPipe file:", mp.__file__)
@@ -18,12 +18,16 @@ def main():
     parser.add_argument('--camera', type=int, default=0, help='Camera index (default: 0).')
     parser.add_argument('--thickness', type=int, default=4, help='Stickman line thickness (default: 4).')
     parser.add_argument('--sketch', action='store_true', help='Enable handwriting sketch style.')
+    parser.add_argument('--zoom', action='store_true', help='Enable auto-zoom (tracking) mode.')
     args = parser.parse_args()
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
         print(f"Error: Could not open camera {args.camera}.")
         return
+    
+    # Initialize Camera logic if zoom is enabled
+    stickman_camera = StickmanCamera() if args.zoom else None
 
     print("Press 'q' to quit.")
     
@@ -50,7 +54,7 @@ def main():
             
             # Draw Stickman
             # draw_stickman now expects 'results' and 'img_shape'
-            stickman_img = draw_stickman(results, img_shape=frame.shape, thickness=args.thickness, sketch_mode=args.sketch)
+            stickman_img = draw_stickman(results, img_shape=frame.shape, thickness=args.thickness, sketch_mode=args.sketch, camera=stickman_camera)
 
             # Display
             cv2.imshow('Stickman Native', stickman_img)

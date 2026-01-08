@@ -23,7 +23,107 @@ RIGHT_KNEE = 26
 LEFT_ANKLE = 27
 RIGHT_ANKLE = 28
 
-def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False):
+class StickmanCamera:
+    """
+    Handles auto-zoom and tracking smoothing.
+    """
+    def __init__(self, smoothing=0.1):
+        self.scale = 1.0
+        self.offset_x = 0.0
+        self.offset_y = 0.0
+        self.smoothing = smoothing
+        self.first_frame = True
+
+    def update(self, landmarks, img_w, img_h):
+        if not landmarks: return
+        
+        # 1. Calculate Bounding Box of Pose
+        xs = [lm.x for lm in landmarks.landmark if lm.visibility > 0.5]
+        ys = [lm.y for lm in landmarks.landmark if lm.visibility > 0.5]
+        
+        if not xs or not ys: return
+
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        
+        # 2. Calculate Target Scale & Center
+        # Target: Pose height should be ~80% of screen height
+        pose_h = max_y - min_y
+        pose_w = max_x - min_x
+        
+        # Avoid division by zero or extreme zoom
+        if pose_h < 0.1: pose_h = 0.1 
+        
+        target_scale = 0.8 / pose_h
+        # Clamp scale
+        target_scale = max(0.5, min(target_scale, 3.0))
+
+        # Target center (normalized)
+        target_cx = (min_x + max_x) / 2
+        target_cy = (min_y + max_y) / 2
+        
+        # 3. Calculate Target Offset to center the pose
+        # We want target_cx to map to 0.5 (center of screen)
+        # (target_cx + offset_x) * scale = ... wait.
+        # Let's do: ScreenPt = (NormPt - Center) * Scale * Size + ScreenCenter
+        # So we just track Center and Scale.
+        
+        if self.first_frame:
+            self.scale = target_scale
+            self.offset_x = target_cx
+            self.offset_y = target_cy
+            self.first_frame = False
+        else:
+            self.scale += (target_scale - self.scale) * self.smoothing
+            self.offset_x += (target_cx - self.offset_x) * self.smoothing
+            self.offset_y += (target_cy - self.offset_y) * self.smoothing
+
+    def transform(self, pt_norm, img_w, img_h):
+        """
+        Transforms a normalized point (0-1) to screen coordinates (px)
+        based on current camera state.
+        """
+        # Center the point relative to the tracked center
+        x = (pt_norm[0] - self.offset_x)
+        y = (pt_norm[1] - self.offset_y)
+        
+        # Scale
+        x *= self.scale
+        y *= self.scale
+        
+        # Move back to screen center
+        # Aspect ratio correction? 
+        # Normalized coordinates are usually 0-1, but aspect ratio of image matters for visual squareness.
+        # MP normalized coords: x is 0-1 (width), y is 0-1 (height).
+        # To keep aspect ratio correct during zoom:
+        # We should scale x and y by the same factor relative to pixels.
+        
+        # Let's project to pixels first assuming identity camera
+        px = pt_norm[0] * img_w
+        py = pt_norm[1] * img_h
+        
+        # Tracked center in pixels
+        cx = self.offset_x * img_w
+        cy = self.offset_y * img_h
+        
+        # Current point relative to tracked center (pixels)
+        dx = px - cx
+        dy = py - cy
+        
+        # Scaled
+        dx *= self.scale
+        dy *= self.scale
+        
+        # Screen Center
+        scx = img_w / 2
+        scy = img_h / 2
+        
+        final_x = scx + dx
+        final_y = scy + dy
+        
+        return np.array([final_x, final_y])
+
+def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False, camera=None):
     """
     Draws a stickman based on MediaPipe Holistic results.
     
@@ -31,7 +131,8 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False)
         results: MediaPipe Holistic results object.
         img_shape (tuple): (height, width) of the output image.
         thickness (int): Base thickness for lines.
-        sketch_mode (bool): If True, applies handwriting style (jitter/multiple strokes).
+        sketch_mode (bool): If True, applies handwriting style.
+        camera (StickmanCamera, optional): If provided, applies auto-zoom/tracking.
         
     Returns:
         numpy.ndarray: The stickman image.
@@ -42,12 +143,22 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False)
     if not results.pose_landmarks:
         return canvas
 
+    # Update Camera if provided
+    if camera:
+        camera.update(results.pose_landmarks, w, h)
+
     # Helper to get point from landmarks
     def get_point(idx, landmarks=results.pose_landmarks):
         if idx >= len(landmarks.landmark): return None
         lm = landmarks.landmark[idx]
         if lm.visibility < 0.5: return None
-        return np.array([lm.x * w, lm.y * h])
+        
+        pt_norm = np.array([lm.x, lm.y])
+        
+        if camera:
+            return camera.transform(pt_norm, w, h)
+        else:
+            return np.array([lm.x * w, lm.y * h])
 
     def get_midpoint(p1, p2):
         if p1 is not None and p2 is not None:
@@ -233,6 +344,9 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False)
     if nose is not None:
         radius = 30
         if l_shoulder is not None and r_shoulder is not None:
+             # Calculate shoulder distance in pixel coords
+             # Since points are already transformed by get_point, 
+             # dist_shoulder will be in screen pixels (zoomed or not).
              dist_shoulder = np.linalg.norm(l_shoulder - r_shoulder)
              if dist_shoulder > 0:
                 radius = int(dist_shoulder / 2.2)
@@ -281,6 +395,12 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False)
         
         foot_vec = u * foot_len
         px = ankle[0]
+        # Need re-calculated width/center for foot direction logic?
+        # Transform logic handles coordinate space transparency.
+        # But we need "screen center" logic for foot direction? Or relative to pelvis?
+        # Current logic: `if px > cx`. cx is pelvis x or w/2.
+        # Since points are transformed, pelvis x is correct relative to ankle x.
+        # Logic holds.
         cx = pelvis[0] if pelvis is not None else w/2
         if px > cx:
             if foot_vec[0] < 0: foot_vec = -foot_vec
@@ -295,28 +415,23 @@ def draw_stickman(results, img_shape=(480, 640), thickness=4, sketch_mode=False)
     # If we have hand landmarks, use them. Else simulate.
     def draw_real_hand(hand_landmarks):
         # Wrist is 0
-        # Thumb: 1-4, Index: 5-8, Middle: 9-12, Ring: 13-16, Pinky: 17-20
-        # We can just draw lines 0->1->2.. and 0->5->6.. etc
-        wrist = np.array([hand_landmarks.landmark[0].x * w, hand_landmarks.landmark[0].y * h])
+        if not hand_landmarks: return
         
-        chains = [
-            [0, 1, 2, 3, 4],       # Thumb
-            [0, 5, 6, 7, 8],       # Index
-            [5, 9, 10, 11, 12],    # Middle (root at 9, but usually 5-9 is palm. Let's draw 0->9->10...)
-            # Actually 0->5, 0->9, 0->13, 0->17 are palm bones.
-        ]
-        # Better simple skeleton:
-        # Wrist(0) -> Thumb(1..4)
-        # Wrist(0) -> Index(5..8)
-        # Wrist(0) -> Middle(9..12)
-        # Wrist(0) -> Ring(13..16)
-        # Wrist(0) -> Pinky(17..20)
+        # Helper to get hand point relative to camera
+        def get_hand_pt(idx):
+             lm = hand_landmarks.landmark[idx]
+             pt_norm = np.array([lm.x, lm.y])
+             if camera:
+                 return camera.transform(pt_norm, w, h)
+             else:
+                 return np.array([lm.x * w, lm.y * h])
+
+        wrist = get_hand_pt(0)
         
         for finger_indices in [[1,2,3,4], [5,6,7,8], [9,10,11,12], [13,14,15,16], [17,18,19,20]]:
             pts = [wrist]
             for idx in finger_indices:
-                lm = hand_landmarks.landmark[idx]
-                pts.append(np.array([lm.x * w, lm.y * h]))
+                pts.append(get_hand_pt(idx))
             draw_curve_from_points(pts, max(1, thickness//2), complexity=1, sketch_mode=sketch_mode)
 
     # Check for hands in results
