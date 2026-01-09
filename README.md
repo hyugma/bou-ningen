@@ -26,20 +26,18 @@
 
 2. **アプリの起動:**
 
-   ### 1. ネイティブアプリ (推奨 - 最速)
+   ### 1. ネイティブアプリ
    OpenCVウィンドウで高速に動作します。
 
+   ```bash
    # 通常起動
    uv run native_app.py
 
    # 自動ズーム（追跡）を有効化
-   uv run native_app.py --zoom
+   uv run native_app.py --track
 
    # Zoomミーティング等で使用する仮想カメラ出力を有効化 (要OBS)
    uv run native_app.py --virtual
-
-   # 手書き風スタイルを有効化
-   uv run native_app.py --sketch
 
    # 線の太さを指定 (例: 10)
    uv run native_app.py --thickness 10
@@ -49,20 +47,30 @@
    ```
    **操作:** キーボードの `q` で終了します。
 
-   ### 2. Web アプリケーション (Gradio)
-   ブラウザで使用できるインターフェースです。
-
-   ```bash
-   uv run app.py
-   ```
-   起動後、表示されるURL (例: `http://localhost:7860`) にアクセスします。Web UI上で手書きスタイルの切り替えや太さ調整が可能です。
-
 ## プロジェクト構成
 
-- `app.py`: Gradioを使用したWeb UIアプリケーション
 - `native_app.py`: OpenCVを使用したネイティブアプリケーション
 - `stickman.py`: 棒人間の描画ロジック (MediaPipe対応)
+- `stickman_camera.py`: カメラ自動追従ロジック
+- `stickman_processor.py`: メイン処理クラス
 - `pyproject.toml`: 依存関係定義
+
+## トラブルシューティング & 仮想カメラの使用順序
+
+仮想カメラ (Virtual Camera) が黒い画面になる場合や動作しない場合、以下の手順と順序を確認してください。
+
+1. **前提条件**: OBS Studioがインストールされていること（OBS Virtual Cameraドライバが必要です）。
+2. **OBSの起動について**:
+   - **通常のOBSアプリを起動する必要はありません。**
+   - もしOBSを起動している場合、OBS側の「仮想カメラ開始」ボタンは**押さないでください**。OBSがカメラデバイスを占有し、Pythonアプリからの映像を上書きしてしまう可能性があります。
+3. **起動順序**:
+   1. Pythonアプリを実行します: `uv run native_app.py --virtual`
+   2. コンソールに `Starting Virtual Camera...` と表示され、エラーが出ないことを確認します。
+   3. Zoom / Teams / Google Meet などの会議アプリを開きます。
+   4. カメラ設定で **「OBS Virtual Camera」** を選択します。
+4. **それでも映らない場合**:
+   - 会議アプリを再起動してください。
+   - `uv run debug_vcam.py` を実行して、色のついたテスト映像が送られるか確認してください。
 
 ## ライセンス
 

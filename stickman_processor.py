@@ -4,7 +4,9 @@ import numpy as np
 import time
 import os
 import urllib.request
-from stickman import draw_stickman, StickmanCamera
+from stickman import draw_stickman
+from stickman_camera import StickmanCamera
+from smoother import LandmarkSmoother
 
 class StickmanProcessor:
     """
@@ -20,6 +22,10 @@ class StickmanProcessor:
         self.hand_landmarker = None
         self.holistic = None
         self.camera = None # Persistent camera instance
+        
+        # Smoothing
+        self.single_pose_smoother = LandmarkSmoother(alpha=0.5)
+        self.multi_pose_smoothers = {} # index -> LandmarkSmoother
         
         # Paths
         self.pose_model_path = 'pose_landmarker_full.task'
@@ -73,7 +79,7 @@ class StickmanProcessor:
             min_tracking_confidence=0.5
         )
 
-    def process_frame(self, frame, thickness=4, sketch_mode=False, auto_zoom=False, single_mode=False, camera_instance=None):
+    def process_frame(self, frame, thickness=4, auto_track=False, single_mode=False, camera_instance=None):
         """
         Process a single frame (BGR or RGB numpy array).
         Returns the processed stickman image (BGR).
@@ -85,11 +91,11 @@ class StickmanProcessor:
         # But if we maintain internal state (Native), use self.camera.
         # Let's standardize: pass camera_instance if stateless (Gradio), else internal.
         if camera_instance is None:
-             if self.camera is None and auto_zoom:
+             if self.camera is None and auto_track:
                  self.camera = StickmanCamera()
-             cam_to_use = self.camera if auto_zoom else None
+             cam_to_use = self.camera if auto_track else None
         else:
-             cam_to_use = camera_instance if auto_zoom else None
+             cam_to_use = camera_instance if auto_track else None
              # If passed instance creates one, we should probably update it? 
              # Gradio State logic handles this by returning it.
 
@@ -109,11 +115,26 @@ class StickmanProcessor:
                 frame_rgb.flags.writeable = False
                 results = self.holistic.process(frame_rgb)
                 
+                # Apply Smoothing (Single Mode)
+                if results.pose_landmarks:
+                    smoothed_lms = self.single_pose_smoother.update(results.pose_landmarks)
+                    # We need to monkey-patch or replace the landmarks in results
+                    # results.pose_landmarks.landmark is a RepeatedCompositeContainer, tricky to replace.
+                    # But draw_stickman accepts 'data'. For single mode it expects 'results'.
+                    # Or we can make a mock results object.
+                    
+                    class MockHolisticResults:
+                        def __init__(self, original_res, smoothed_pose):
+                            self.pose_landmarks = type('obj', (object,), {'landmark': smoothed_pose}) if smoothed_pose else None
+                            self.left_hand_landmarks = original_res.left_hand_landmarks
+                            self.right_hand_landmarks = original_res.right_hand_landmarks
+                    
+                    results = MockHolisticResults(results, smoothed_lms)
+
                 output = draw_stickman(
                     results, 
                     img_shape=frame.shape, 
                     thickness=int(thickness), 
-                    sketch_mode=sketch_mode, 
                     camera=cam_to_use, 
                     mode='single'
                 )
@@ -128,11 +149,38 @@ class StickmanProcessor:
                 pose_res = self.pose_landmarker.detect_for_video(mp_image, timestamp_ms)
                 hand_res = self.hand_landmarker.detect_for_video(mp_image, timestamp_ms)
                 
+                # Apply Smoothing (Multi Mode)
+                smoothed_poses = []
+                if pose_res.pose_landmarks:
+                    for i, landmarks in enumerate(pose_res.pose_landmarks):
+                        # JUMP DETECTION
+                        # If the new pose is significantly far from the current smoothed pose for this index,
+                        # assume it's a new person taking this slot (tracker swapped) and reset smoothing.
+                        if i in self.multi_pose_smoothers:
+                            smoother = self.multi_pose_smoothers[i]
+                            # specific check: Nose (0) or Hips (23, 24). Let's use Nose.
+                            # landmarks is list of NormalizedLandmark
+                            if len(landmarks) > 0 and 0 in smoother.smoothed_landmarks:
+                                new_nose = landmarks[0]
+                                prev_nose = smoother.smoothed_landmarks[0]
+                                
+                                # Simple Euclidean distance in normalized space
+                                dist = np.sqrt((new_nose.x - prev_nose.x)**2 + (new_nose.y - prev_nose.y)**2)
+                                
+                                if dist > 0.2: # Threshold: 20% of screen
+                                    # print(f"Jump detected for index {i} (dist={dist:.2f}). Resetting smoother.")
+                                    self.multi_pose_smoothers[i] = LandmarkSmoother(alpha=0.5)
+
+                        if i not in self.multi_pose_smoothers:
+                            self.multi_pose_smoothers[i] = LandmarkSmoother(alpha=0.5)
+                        
+                        s_lms = self.multi_pose_smoothers[i].update(landmarks)
+                        smoothed_poses.append(s_lms)
+                
                 output = draw_stickman(
-                    pose_res.pose_landmarks, 
+                    smoothed_poses, 
                     img_shape=frame.shape, 
                     thickness=int(thickness), 
-                    sketch_mode=sketch_mode, 
                     camera=cam_to_use, 
                     mode='multi',
                     multi_hand_landmarks=hand_res.hand_landmarks

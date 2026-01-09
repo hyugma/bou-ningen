@@ -8,8 +8,7 @@ def main():
     parser = argparse.ArgumentParser(description='Native Stickman Capture')
     parser.add_argument('--camera', type=int, default=0, help='Camera index (default: 0).')
     parser.add_argument('--thickness', type=int, default=4, help='Stickman line thickness (default: 4).')
-    parser.add_argument('--sketch', action='store_true', help='Enable handwriting sketch style.')
-    parser.add_argument('--zoom', action='store_true', help='Enable auto-zoom (tracking) mode.')
+    parser.add_argument('--track', action='store_true', help='Enable auto-tracking (zoom) mode.')
     parser.add_argument('--virtual', action='store_true', help='Enable Output to Virtual Camera (for Zoom).')
     parser.add_argument('--single', action='store_true', help='Enable Single Person Mode (High Detail + Fingers).')
     args = parser.parse_args()
@@ -28,7 +27,7 @@ def main():
             h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             fps = cap.get(cv2.CAP_PROP_FPS) or 30
             print(f"Starting Virtual Camera: {w}x{h} @ {fps}fps")
-            virtual_cam = pyvirtualcam.Camera(width=w, height=h, fps=fps)
+            virtual_cam = pyvirtualcam.Camera(width=w, height=h, fps=fps, fmt=pyvirtualcam.PixelFormat.RGB)
             print(f"--> Virtual Camera Ready! Select '{virtual_cam.device}' in Zoom/Teams.")
         except ImportError:
             print("Error: pyvirtualcam not found. Please install with `uv add pyvirtualcam`.")
@@ -60,8 +59,7 @@ def main():
         stickman_img, _ = processor.process_frame(
             frame, 
             thickness=args.thickness, 
-            sketch_mode=args.sketch, 
-            auto_zoom=args.zoom, 
+            auto_track=args.track, 
             single_mode=args.single
             # internal camera state managed by processor for native app
         )

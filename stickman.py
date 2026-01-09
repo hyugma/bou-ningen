@@ -23,6 +23,8 @@ RIGHT_KNEE = 26
 LEFT_ANKLE = 27
 RIGHT_ANKLE = 28
 
+from stickman_camera import StickmanCamera
+
 class MockHand:
     """Helper to wrap a list of landmarks into an object with .landmark property."""
     def __init__(self, lms):
@@ -33,107 +35,8 @@ class MockLandmarks:
     def __init__(self, lms):
         self.landmark = lms
 
-class StickmanCamera:
-    """
-    Handles auto-zoom and tracking smoothing.
-    """
-    def __init__(self, smoothing=0.1):
-        self.scale = 1.0
-        self.offset_x = 0.0
-        self.offset_y = 0.0
-        self.smoothing = smoothing
-        self.first_frame = True
 
-    def update(self, landmarks, img_w, img_h):
-        if not landmarks: return
-        
-        # 1. Calculate Bounding Box of Pose
-        xs = [lm.x for lm in landmarks.landmark if lm.visibility > 0.5]
-        ys = [lm.y for lm in landmarks.landmark if lm.visibility > 0.5]
-        
-        if not xs or not ys: return
-
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-        
-        # 2. Calculate Target Scale & Center
-        # Target: Pose height should be ~80% of screen height
-        pose_h = max_y - min_y
-        pose_w = max_x - min_x
-        
-        # Avoid division by zero or extreme zoom
-        if pose_h < 0.1: pose_h = 0.1 
-        
-        target_scale = 0.8 / pose_h
-        # Clamp scale
-        target_scale = max(0.5, min(target_scale, 3.0))
-
-        # Target center (normalized)
-        target_cx = (min_x + max_x) / 2
-        target_cy = (min_y + max_y) / 2
-        
-        # 3. Calculate Target Offset to center the pose
-        # We want target_cx to map to 0.5 (center of screen)
-        # (target_cx + offset_x) * scale = ... wait.
-        # Let's do: ScreenPt = (NormPt - Center) * Scale * Size + ScreenCenter
-        # So we just track Center and Scale.
-        
-        if self.first_frame:
-            self.scale = target_scale
-            self.offset_x = target_cx
-            self.offset_y = target_cy
-            self.first_frame = False
-        else:
-            self.scale += (target_scale - self.scale) * self.smoothing
-            self.offset_x += (target_cx - self.offset_x) * self.smoothing
-            self.offset_y += (target_cy - self.offset_y) * self.smoothing
-
-    def transform(self, pt_norm, img_w, img_h):
-        """
-        Transforms a normalized point (0-1) to screen coordinates (px)
-        based on current camera state.
-        """
-        # Center the point relative to the tracked center
-        x = (pt_norm[0] - self.offset_x)
-        y = (pt_norm[1] - self.offset_y)
-        
-        # Scale
-        x *= self.scale
-        y *= self.scale
-        
-        # Move back to screen center
-        # Aspect ratio correction? 
-        # Normalized coordinates are usually 0-1, but aspect ratio of image matters for visual squareness.
-        # MP normalized coords: x is 0-1 (width), y is 0-1 (height).
-        # To keep aspect ratio correct during zoom:
-        # We should scale x and y by the same factor relative to pixels.
-        
-        # Let's project to pixels first assuming identity camera
-        px = pt_norm[0] * img_w
-        py = pt_norm[1] * img_h
-        
-        # Tracked center in pixels
-        cx = self.offset_x * img_w
-        cy = self.offset_y * img_h
-        
-        # Current point relative to tracked center (pixels)
-        dx = px - cx
-        dy = py - cy
-        
-        # Scaled
-        dx *= self.scale
-        dy *= self.scale
-        
-        # Screen Center
-        scx = img_w / 2
-        scy = img_h / 2
-        
-        final_x = scx + dx
-        final_y = scy + dy
-        
-        return np.array([final_x, final_y])
-
-def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, camera, left_hand=None, right_hand=None):
+def draw_single_person(canvas, landmarks, img_shape, thickness, camera, left_hand=None, right_hand=None):
     """
     Draws a single stickman from a list of Pose Landmarker landmarks.
     Optional: left_hand, right_hand (MediaPipe landmarks) for detailed fingers.
@@ -184,77 +87,49 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
         spline_points.append(points[-1])
         return spline_points
 
-    def draw_sketch_line(p1, p2, thickness, complexity=2, sketch_mode=False):
+    def draw_line(p1, p2, thickness):
         if p1 is None or p2 is None: return
         pt1 = np.array([p1[0], p1[1]])
         pt2 = np.array([p2[0], p2[1]])
         dist = np.linalg.norm(pt1 - pt2)
         if dist < 1: return
 
-        loop_count = complexity if sketch_mode else 1
-        
-        for _ in range(loop_count):
-            if sketch_mode:
-                num_segments = max(2, int(dist / 15))
-                t_values = np.linspace(0, 1, num_segments + 1)
-                points = []
-                for t in t_values:
-                    base_pt = pt1 * (1 - t) + pt2 * t
-                    jitter_x = np.random.randint(-2, 3)
-                    jitter_y = np.random.randint(-2, 3)
-                    points.append((int(base_pt[0] + jitter_x), int(base_pt[1] + jitter_y)))
-                for i in range(len(points) - 1):
-                    cv2.line(canvas, points[i], points[i+1], COLOR, thickness, cv2.LINE_AA)
-            else:
-                # Clean line
-                cv2.line(canvas, tuple(pt1.astype(int)), tuple(pt2.astype(int)), COLOR, thickness, cv2.LINE_AA)
+        # Clean line
+        cv2.line(canvas, tuple(pt1.astype(int)), tuple(pt2.astype(int)), COLOR, thickness, cv2.LINE_AA)
 
-    def draw_curve_from_points(points_list, thickness, complexity=2, sketch_mode=False):
+    def draw_curve_from_points(points_list, thickness):
         valid_pts = [p for p in points_list if p is not None]
         if len(valid_pts) < 2: return
         smooth_points = generate_catmull_rom_spline(valid_pts, num_points_per_segment=15)
         
-        loop_count = complexity if sketch_mode else 1
-
-        for _ in range(loop_count):
-             for i in range(len(smooth_points) - 1):
-                pt1 = smooth_points[i]
-                pt2 = smooth_points[i+1]
-                
-                if sketch_mode:
-                    p_start = (int(pt1[0]) + np.random.randint(-2,3), int(pt1[1]) + np.random.randint(-2,3))
-                    p_end = (int(pt2[0]) + np.random.randint(-2,3), int(pt2[1]) + np.random.randint(-2,3))
-                else:
-                    p_start = (int(pt1[0]), int(pt1[1]))
-                    p_end = (int(pt2[0]), int(pt2[1]))
-                    
-                cv2.line(canvas, p_start, p_end, COLOR, thickness, cv2.LINE_AA)
+        for i in range(len(smooth_points) - 1):
+            pt1 = smooth_points[i]
+            pt2 = smooth_points[i+1]
+            
+            p_start = (int(pt1[0]), int(pt1[1]))
+            p_end = (int(pt2[0]), int(pt2[1]))
+            
+            cv2.line(canvas, p_start, p_end, COLOR, thickness, cv2.LINE_AA)
     
-    def draw_sketch_circle(center, radius, thickness, complexity=2, sketch_mode=False):
+    def draw_sketch_circle(center, radius, thickness):
         if center is None: return
         cx, cy = int(center[0]), int(center[1])
         radius = int(radius)
         
-        loop_count = complexity if sketch_mode else 1
-        
-        for _ in range(loop_count):
-            num_pts = max(8, int(radius / 2))
-            angles = np.linspace(0, 2*np.pi, num_pts, endpoint=True)
-            points = []
-            for ang in angles:
-                if sketch_mode:
-                    r_jit = radius + np.random.randint(-2, 3)
-                else:
-                    r_jit = radius
-                x = int(cx + r_jit * np.cos(ang))
-                y = int(cy + r_jit * np.sin(ang))
-                points.append((x, y))
-            for i in range(len(points)):
-                pt_a = points[i]
-                pt_b = points[(i+1) % len(points)]
-                cv2.line(canvas, pt_a, pt_b, COLOR, thickness, cv2.LINE_AA)
+        num_pts = max(8, int(radius / 2))
+        angles = np.linspace(0, 2*np.pi, num_pts, endpoint=True)
+        points = []
+        for ang in angles:
+            r_jit = radius
+            x = int(cx + r_jit * np.cos(ang))
+            y = int(cy + r_jit * np.sin(ang))
+            points.append((x, y))
+        for i in range(len(points)):
+            pt_a = points[i]
+            pt_b = points[(i+1) % len(points)]
+            cv2.line(canvas, pt_a, pt_b, COLOR, thickness, cv2.LINE_AA)
 
-    def draw_henohenomoheji(center, l_eye_pt, r_eye_pt, radius, thickness, complexity=2, sketch_mode=False, facing_right=True):
+    def draw_henohenomoheji(center, l_eye_pt, r_eye_pt, radius, thickness, facing_right=True):
         if center is None: return
         cx, cy = int(center[0]), int(center[1])
         r = float(radius)
@@ -265,7 +140,7 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
             abs_pts = []
             for (rx, ry) in pts_rel:
                 abs_pts.append((bx + rx * r, by + ry * r))
-            draw_curve_from_points(abs_pts, thickness, complexity=1, sketch_mode=sketch_mode)
+            draw_curve_from_points(abs_pts, thickness)
 
         # 3. NO (Right Eye)
         if r_eye_pt is not None:
@@ -311,14 +186,24 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
         # Vertical stroke on Right (Back of head).
         # Hook on Left (Chin/Face).
         
-        x_mult = 1.0 if facing_right else -1.0
+        # x_mult = 1.0 if facing_right else -1.0
+        x_mult = -1.0 if facing_right else 1.0
         
+        # ORIRINAL
+        #shi_pts = [
+        #    (-0.3 * x_mult, -0.75),  # Start top-back
+        #    (-0.95 * x_mult, -0.2),  # Bulge back
+        #    (-0.2 * x_mult, 0.95),   # Bottom chin area
+        #    (0.85 * x_mult, 0.2)     # Hook up to face front
+        #]
+
         shi_pts = [
-            (-0.3 * x_mult, -0.75),  # Start top-back
-            (-0.95 * x_mult, -0.2),  # Bulge back
-            (-0.2 * x_mult, 0.95),   # Bottom chin area
+            (-0.7 * x_mult, -0.75),  # Start top-back
+            (-0.7 * x_mult, 0.5),    # Bulge back
+            (-0.1 * x_mult, 0.95),   # Bottom chin area
             (0.85 * x_mult, 0.2)     # Hook up to face front
         ]
+
         draw_stroke(nose_base, shi_pts)
         
         # Dakuten (Dots)
@@ -393,14 +278,40 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
         facing_right = True
         if neck is not None:
              # Check X direction relative to neck (center of shoulders)
-             # If nose.x > neck.x -> Facing Right (Screen Right)
-             if nose[0] < neck[0]: # Wait. pixels increase right.
-                  # nose[0] < neck[0] => Nose is Left of Neck => Facing Left.
-                  facing_right = False
+             # Pixels increase right.
+             # nose[0] < neck[0] => Nose is Left of Neck => Facing Left.
+             
+             # Hysteresis Threshold
+             # We only switch if we cross the threshold significantly.
+             threshold = radius * 0.3 # 30% of head size
+             
+             # Use smoothed value from camera if available
+             if camera and hasattr(camera, 'face_diff_smooth'):
+                 # Need to scale normalized diff to pixel space (roughly)
+                 # StickmanCamera calculates stats in normalized space (0-1).
+                 # Radius is in pixels. Normalized diff is small.
+                 # We need to convert normalized diff to pixels: diff * width
+                 # But width (w) is available here.
+                 diff = camera.face_diff_smooth * w
              else:
-                  facing_right = True
+                 diff = nose[0] - neck[0]
+             
+             if diff < -threshold:
+                 facing_right = False
+             elif diff > threshold:
+                 facing_right = True
+             else:
+                 # Inside deadzone
+                 if camera:
+                     facing_right = camera.facing_right
+                 else:
+                     # Default if no camera state
+                     facing_right = (diff > 0)
+
+             if camera:
+                 camera.facing_right = facing_right
                   
-        draw_henohenomoheji(nose, l_eye, r_eye, radius, thickness, sketch_mode=sketch_mode, facing_right=facing_right)
+        draw_henohenomoheji(nose, l_eye, r_eye, radius, thickness, facing_right=facing_right)
         
         if neck is not None:
             v = neck - nose
@@ -418,17 +329,17 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
         chain_l = [body_start]
         if head_bottom is not None: chain_l.append(neck)
         chain_l.extend([pelvis, l_knee, l_ankle])
-        draw_curve_from_points(chain_l, thickness, sketch_mode=sketch_mode)
+        draw_curve_from_points(chain_l, thickness)
         
         # Right Leg Chain
         chain_r = [body_start]
         if head_bottom is not None: chain_r.append(neck)
         chain_r.extend([pelvis, r_knee, r_ankle])
-        draw_curve_from_points(chain_r, thickness, sketch_mode=sketch_mode)
+        draw_curve_from_points(chain_r, thickness)
         
         # Arms
-        draw_curve_from_points([neck, l_elbow, l_wrist], thickness, sketch_mode=sketch_mode)
-        draw_curve_from_points([neck, r_elbow, r_wrist], thickness, sketch_mode=sketch_mode)
+        draw_curve_from_points([neck, l_elbow, l_wrist], thickness)
+        draw_curve_from_points([neck, r_elbow, r_wrist], thickness)
 
     # 3. Feet (Simple)
     def draw_foot(ankle, knee, side='left'):
@@ -454,7 +365,7 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
             if foot_vec[0] < 0: foot_vec = -foot_vec
         else:
             if foot_vec[0] > 0: foot_vec = -foot_vec
-        draw_sketch_line(ankle, ankle + foot_vec, thickness, complexity=1, sketch_mode=sketch_mode)
+        draw_line(ankle, ankle + foot_vec, thickness)
 
     draw_foot(l_ankle, l_knee, 'left')
     draw_foot(r_ankle, r_knee, 'right')
@@ -475,7 +386,7 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
         for finger_indices in [[1,2,3,4], [5,6,7,8], [9,10,11,12], [13,14,15,16], [17,18,19,20]]:
             pts = [wrist]
             for idx in finger_indices: pts.append(get_hand_pt(idx))
-            draw_curve_from_points(pts, max(1, thickness//2), complexity=1, sketch_mode=sketch_mode)
+            draw_curve_from_points(pts, max(1, thickness//2))
 
     if left_hand:
         draw_real_hand(left_hand)
@@ -483,7 +394,7 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
          # Fallback Simple Hand
          hand_rad = int(max(5, thickness * 1.5))
          cx, cy = int(l_wrist[0]), int(l_wrist[1])
-         for _ in range(2 if sketch_mode else 1):
+         for _ in range(1):
              cv2.circle(canvas, (cx, cy), hand_rad, COLOR, thickness//2)
              
     if right_hand:
@@ -492,12 +403,12 @@ def draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, cam
          # Fallback Simple Hand
          hand_rad = int(max(5, thickness * 1.5))
          cx, cy = int(r_wrist[0]), int(r_wrist[1])
-         for _ in range(2 if sketch_mode else 1):
+         for _ in range(1):
              cv2.circle(canvas, (cx, cy), hand_rad, COLOR, thickness//2)
 
     return canvas
 
-def draw_stickman(data, img_shape=(480, 640), thickness=4, sketch_mode=False, camera=None, mode='multi', multi_hand_landmarks=None):
+def draw_stickman(data, img_shape=(480, 640), thickness=4, camera=None, mode='multi', multi_hand_landmarks=None):
     """
     Draws stickman/men.
     Args:
@@ -570,7 +481,7 @@ def draw_stickman(data, img_shape=(480, 640), thickness=4, sketch_mode=False, ca
                         min_dist_r = dist
                         r_hand_match = MockHand(hand_lms)
 
-            draw_single_person(canvas, landmarks, img_shape, thickness, sketch_mode, camera, 
+            draw_single_person(canvas, landmarks, img_shape, thickness, camera, 
                                left_hand=l_hand_match, right_hand=r_hand_match)
 
     elif mode == 'single':
@@ -586,7 +497,6 @@ def draw_stickman(data, img_shape=(480, 640), thickness=4, sketch_mode=False, ca
             results.pose_landmarks.landmark, 
             img_shape, 
             thickness, 
-            sketch_mode, 
             camera,
             left_hand=results.left_hand_landmarks,
             right_hand=results.right_hand_landmarks
